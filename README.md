@@ -52,28 +52,6 @@ In the new environment, manually install the following packages: open3d, matplot
 
 You can use the package directly from the Anaconda command line.
 
-<h3> No Reference Data Validation </h3>
-
-Data validation using only the intrinsic properties of the digitized point cloud. Returns a .json file containing the quality scores based on these.
-
-    python -m 3D_DaVa processing [-h] [-o OUTPUT] cloud_file
-
-Arguments:
-
-**cloud_file**: point cloud file to be asessed (recommended format: .ply, see notes).
-
-**-h, –help**: (Optional) show arguments
-
-**-vis, --visualize**: (Optional) allow visualization of process steps
-
-**-snap, --snapshot**: (Optional) allow snapshotting of process steps
-
-**-o OUTPUT, –output OUTPUT**: (Optional) filename of metric-filled output file. No file extension needed (automatically turned to .json)
-
-**-save, –-save**: (Optional) allow saving the denoised point cloud as a (.pcd file) on current path. (Obs: TODO)
-
-**-auto, –-automatic**: (Optional) runs the pipeline without user intervenstion.
-
 <h3> Reference-based Data Validation </h3>
 
 Data validation using both the no-reference and the reference-based assessment of the digitized point cloud and metrics resulting from the alignment with a reference model. Returns a .json file containing the quality scores based on these.
