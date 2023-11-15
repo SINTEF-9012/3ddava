@@ -34,8 +34,22 @@ downsized_voxel_size = None
 mean_nb = None
 automatic = False 
 snapshotting = False    
-visualization = False  
+visualization = False
+saving = False
 
+def normalize_point_cloud(pcd, target_scale):
+    # Calculate scaling factor
+    current_scale = np.max(np.asarray(pcd.points), axis=0) - np.min(np.asarray(pcd.points), axis=0)
+    scaling_factor = target_scale / np.max(current_scale)
+
+    # Apply scaling to coordinates
+    scaled_points = scaling_factor * np.asarray(pcd.points)
+    
+    # Create a new PointCloud with scaled coordinates
+    normalized_pcd = o3d.geometry.PointCloud()
+    normalized_pcd.points = o3d.utility.Vector3dVector(scaled_points)
+
+    return normalized_pcd
 
 @lru_cache
 def process_with_reference(input_file:str, reference_file:str, *args):
@@ -77,13 +91,18 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     noise_threshold = Q3 + 1.5 * IQR
     noise_ind = np.where(scaled_probs >= noise_threshold)[0]
     denoised_pcd = proc.get_cloud_by_index(original, noise_ind, invert =True)
-    # inout.visualize_differences(pcd, denoised_pcd) # Test visual
+    if visualization:
+        print("Denoised:")
+        inout.visualize(denoised_pcd) # Test visual
+    #print("Denoised:")
+    #inout.visualize(denoised_pcd) # Test visual
+    #inout.visualize_differences(pcd, denoised_pcd) # Test visual
     
 
     print("Action in progress: read and sample reference...")
     # Read and sample reference:
     original_ref = inout.read_mesh(reference_file)
-    SAMPLING_RATE = 100_000
+    SAMPLING_RATE = len(original.points) * 2 # 200_000
     ref_pcd = proc.create_uniform_sampled_cloud_from_mesh(original_ref, nr_points = SAMPLING_RATE)
     # Reference to be worked on:
     ref = copy.deepcopy(ref_pcd)
@@ -92,6 +111,11 @@ def process_with_reference(input_file:str, reference_file:str, *args):
         inout.snapshot(ref, name = "sampled_ref")
     if visualization:
         inout.visualize(ref)
+
+    # Normalize size - for experiments only!
+    # target_scale = 10  # Set your desired target scale
+    # ref_pcd = normalize_point_cloud(ref_pcd, target_scale)
+    # ref = normalize_point_cloud(ref, target_scale)
 
     # '''
     print("Action in progress: scaling point clouds to same size...")
@@ -116,6 +140,7 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     if not automatic:
         print("Action in progress: eventual mirror transformation for symmetric point clouds ...")
         # In case orientation is wrong, one getst he choice of flipping over the first two axis.
+        inout.visualize_differences(pcd, ref)
         mirror_check = input("Mirror PCD? (y/n) or ENTER to continue:")
         mirror_check = mirror_check.lower()
         yes_choices = ["y", "yes"]
@@ -178,7 +203,7 @@ def process_with_reference(input_file:str, reference_file:str, *args):
         alignment_ref = ref
         alignment_voxel_size = voxel_size_denoised_pcd # If it does not work, try voxel_size_pcd
     # TODO: Non-blocking visualization (http://www.open3d.org/docs/latest/tutorial/visualization/non_blocking_visualization.html)
-    ITER = 1000  # The larger the better -> but more time use
+    ITER = 5000  # The larger the better -> but more time use
     MAX_NN = 50
     LARGE_FACTOR = 5
     max_bound = alignment_pcd.get_max_bound()
@@ -189,7 +214,6 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     max_nn_normal = MAX_NN * LARGE_FACTOR if large else MAX_NN
     max_nn_feature = MAX_NN * LARGE_FACTOR if large else MAX_NN
     solution = [ITER, normal_radius, feature_radius, max_nn_normal, max_nn_feature]
-    # threshold ...
     distances = alignment_pcd.compute_point_cloud_distance(alignment_ref)
     lowest_distance = np.min(distances)
     bounding_box_diagonal = proc.get_l2_distance(min_bound, max_bound)
@@ -205,7 +229,7 @@ def process_with_reference(input_file:str, reference_file:str, *args):
             threshold = lowest_distance/2
     else:
         threshold = (bounding_box_diagonal * overlap_rate)/2
-    # threshold = 0.01
+    threshold = threshold / 2 # Change in paper
     global_result = ali.global_fast_alignment(alignment_pcd, alignment_ref, solution, threshold)
     global_trans = global_result.transformation
     vis_alignment_pcd = copy.deepcopy(alignment_pcd)
@@ -222,7 +246,8 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     pcd.transform(icp_trans) # Transform actual (original) point cloud 
     if visualization:
         inout.visualize_differences(pcd, ref)
-    # inout.visualize_differences(pcd, ref)
+    #print("Alignment:")
+    #inout.visualize_differences(pcd, ref)
     # '''
 
     print("Action in progress: distortion detection based on euclidean distance (P2Point)...")
@@ -242,12 +267,16 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     outlier_threshold = Q3 + 1.5 * IQR
     outlier_ind = np.where(distances > outlier_threshold)[0]
     outliers_pcd = proc.get_cloud_by_index(original, outlier_ind) 
+    non_outliers_pcd = proc.get_cloud_by_index(original, outlier_ind, invert = True) 
     NUM_OUTLIERS = len(outliers_pcd.points)
     VALIDITY = 1.0 - (NUM_OUTLIERS/len(original.points))
     if snapshotting:
         inout.snapshot(outliers_pcd, name="outliers")
     if visualization:
         inout.visualize(outliers_pcd)
+    #print("Visualize outliers (vs non-outliers):")
+    #inout.visualize_differences(non_outliers_pcd, outliers_pcd)
+    #print("Proportion outliers equal to" + str(len(outliers_pcd.points)) + " out of " +  str(len(original.points)) + "points in original pcd.")
 
     print("Action in progress: completeness estimated from reference distances (P2Point)...")
     # TODO: Use downsized if large and link
@@ -260,12 +289,17 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     missing_values_threshold = Q3 + 1.5 * IQR
     missing_values_indices = np.where(distances > missing_values_threshold)[0]
     missing_values_ref_pcd = ref.select_by_index(missing_values_indices)
+    non_missing_values_ref_pcd = ref.select_by_index(missing_values_indices, invert = True)
     NUM_MISSING_VALUES = len(missing_values_ref_pcd.points)
     COMPLETENESS = 1.0 - (NUM_MISSING_VALUES/NUM_RAW_POINTS_REF)
     if snapshotting:
         inout.snapshot(missing_values_ref_pcd, name="missing_values")
     if visualization:
         inout.visualize(missing_values_ref_pcd)
+    #print("Visualize missing values in REF (vs non-missed values in REF):")
+    #inout.visualize_differences(non_missing_values_ref_pcd, missing_values_ref_pcd)
+    #print("Proportion missed values equal to" + str(len(missing_values_ref_pcd.points)) + " out of " +  str(len(original.points)) + "points in original pcd.")
+    
 
     print("Action in progress: distortion detection based on point-to-plane euclidean distances (P2Plane)...")
     # TODO: Use downsized if large and link
@@ -293,22 +327,29 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     IQR = Q3 - Q1
     noise_threshold = Q3 + 1.5 * IQR
     noise_ind = np.where(scaled_probs >= noise_threshold)[0]
+    # Finding indices in noise_ind that are not in outlier_ind
+    noise_ind = np.setdiff1d(noise_ind, outlier_ind)
     noise = proc.get_cloud_by_index(original, noise_ind)
+    non_noise = proc.get_cloud_by_index(original, noise_ind, invert=True)
     NUM_NOISE = len(noise.points)
     ACCURACY = 1.0 - (NUM_NOISE/len(original.points))
+    #print("Visualize noise (vs non-noise):")
+    #inout.visualize_differences(non_noise, noise)
+    #print("Proportion noise equal to" + str(len(noise.points)) + " out of " +  str(len(original.points)) + "points in original pcd.")
 
     # End processing time
     end_time = time.time()
     rpcqa_time = datetime.timedelta(seconds=end_time - start_time)
     print("Processing time (RPCQA):" +  str(rpcqa_time))
 
-    # If save --> obtain clean:
-    # TODO: Add save check
-    noise_out_ind = list(noise_ind) + list(outlier_ind)
-    noise_out_ind = set(noise_out_ind)
-    noise_out_ind = np.array(list(noise_out_ind))
-    clean = proc.get_cloud_by_index(original, noise_out_ind, invert=True)
-    # inout.visualize(clean)
+    if saving:
+        # If save --> obtain clean:
+        noise_out_ind = list(noise_ind) + list(outlier_ind)
+        noise_out_ind = set(noise_out_ind)
+        noise_out_ind = np.array(list(noise_out_ind))
+        clean = proc.get_cloud_by_index(original, noise_out_ind, invert=True)
+        inout.write_cloud("filtered_pcd.pcd", clean) # Write on current path
+        #inout.visualize(clean)
     return [ACCURACY, VALIDITY, COMPLETENESS]
 
 
@@ -761,6 +802,7 @@ def main(argv = None):
     global visualization
     global snapshotting
     global automatic
+    global saving
 
     # Top-level parser:
     parser = argparse.ArgumentParser(add_help=False)
@@ -876,8 +918,6 @@ def main(argv = None):
                 else:
                     quality_calculation(metrics, None)
             # TODO Save the clean model if saving arg is given:
-            if saving:
-                save_clean(snapshotting = snapshotting, visualization = visualization)
         except Exception as e:
             print(str(e) + " Action dropped: processing clouds.  Use -h, --h or --help for more information.")
 
