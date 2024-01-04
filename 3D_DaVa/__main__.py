@@ -62,9 +62,6 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     Returns:
         metric (list) : list containing accuracy, validity and completeness of point cloud
     '''
-    # TODO: For intermediary metric: turn point cloud (not downsized) to mesh using voxel modelling
-    # TODO: Try other R-PCQA approaches (see literature-Graph Similarity) ...
-    # TODO: Try other registration methods (ISS/Curvature/Graph)
 
     global original
     global large
@@ -91,18 +88,12 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     noise_threshold = Q3 + 1.5 * IQR
     noise_ind = np.where(scaled_probs >= noise_threshold)[0]
     denoised_pcd = proc.get_cloud_by_index(original, noise_ind, invert =True)
-    if visualization:
-        print("Denoised:")
-        inout.visualize(denoised_pcd) # Test visual
-    #print("Denoised:")
-    #inout.visualize(denoised_pcd) # Test visual
-    #inout.visualize_differences(pcd, denoised_pcd) # Test visual
     
 
     print("Action in progress: read and sample reference...")
     # Read and sample reference:
     original_ref = inout.read_mesh(reference_file)
-    SAMPLING_RATE = len(original.points) * 2 # 200_000
+    SAMPLING_RATE = len(original.points) * 2
     ref_pcd = proc.create_uniform_sampled_cloud_from_mesh(original_ref, nr_points = SAMPLING_RATE)
     # Reference to be worked on:
     ref = copy.deepcopy(ref_pcd)
@@ -111,13 +102,11 @@ def process_with_reference(input_file:str, reference_file:str, *args):
         inout.snapshot(ref, name = "sampled_ref")
     if visualization:
         inout.visualize(ref)
+    
+    # For experiments using simulated data, make sure that point cloud/reference are normalized (using normalize_point_cloud).
 
-    # Normalize size - for experiments only!
-    # target_scale = 10  # Set your desired target scale
-    # ref_pcd = normalize_point_cloud(ref_pcd, target_scale)
-    # ref = normalize_point_cloud(ref, target_scale)
-
-    # '''
+    # For perfect alignment assumption, skip the code below (everything up to ***) and make sure that the point clouds are overlapped.
+    
     print("Action in progress: scaling point clouds to same size...")
     # Rescale pcd to mesh size. Use denoised cloud for this for better results.
     pcd_max_bound = denoised_pcd.get_max_bound()
@@ -136,9 +125,10 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     denoised_pcd.scale(scaling_factor, center=denoised_pcd.get_center())
     if visualization:
         inout.visualize_differences(pcd, ref)
+    
 
+    print("Action in progress: eventual mirror transformation for symmetric point clouds ...")
     if not automatic:
-        print("Action in progress: eventual mirror transformation for symmetric point clouds ...")
         # In case orientation is wrong, one getst he choice of flipping over the first two axis.
         inout.visualize_differences(pcd, ref)
         mirror_check = input("Mirror PCD? (y/n) or ENTER to continue:")
@@ -175,6 +165,7 @@ def process_with_reference(input_file:str, reference_file:str, *args):
             if visualization:
                 inout.visualize_differences(denoised_pcd, ref)
 
+
     print("Action in progress: downsize/voxelize denoised point cloud and reference ...")
     # Original downsized variables:
     # down_pcd = downsized 
@@ -191,6 +182,7 @@ def process_with_reference(input_file:str, reference_file:str, *args):
         inout.snapshot(down_ref, name = "downsized_ref")
     if visualization:
         inout.visualize(down_ref)
+
 
     print("Action in progress: fast global alignment using feature matching...")
     # Use downsized and denoised versions if the clouds are too large:
@@ -229,7 +221,7 @@ def process_with_reference(input_file:str, reference_file:str, *args):
             threshold = lowest_distance/2
     else:
         threshold = (bounding_box_diagonal * overlap_rate)/2
-    threshold = threshold / 2 # Change in paper
+    threshold = threshold / 2 
     global_result = ali.global_fast_alignment(alignment_pcd, alignment_ref, solution, threshold)
     global_trans = global_result.transformation
     vis_alignment_pcd = copy.deepcopy(alignment_pcd)
@@ -237,49 +229,99 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     if visualization:
         inout.visualize_differences(vis_alignment_pcd, alignment_ref)
 
-    
+
     print("Action in progress: registration refinement using ICP local alignment (P2P)...")
     icp_trans = ali.icp_P2P_registration(alignment_pcd, alignment_ref, global_trans, distance_threshold=threshold)
     eva = ali.evaluate(alignment_pcd, alignment_ref, threshold, icp_trans)
     fitness = eva.fitness
     print("Point cloud registration fitness: ", fitness)
+    pcd_before_transform = copy.deepcopy(pcd)
     pcd.transform(icp_trans) # Transform actual (original) point cloud 
     if visualization:
         inout.visualize_differences(pcd, ref)
-    #print("Alignment:")
-    #inout.visualize_differences(pcd, ref)
-    # '''
-
+    
     print("Action in progress: distortion detection based on euclidean distance (P2Point)...")
-    # TODO: Use downsized if large and link
+    # TODO: Use downsized if large and link (for time efficiency)
     # Calculate distances between downsized digitized scan and reference
     distances = pcd.compute_point_cloud_distance(ref)
     distances = np.asarray(distances)
-    # Update scores (the lowest the distance, the better --> lower score):
-    update_scores(distances, inverse = False)
 
-    print("Action in progress: validity estimated from reference distances and previous scores (P2Point)...")
-    # TODO: Use downsized if large and link
+    print("Action in progress: initial outlier removal based on P2Point distance...")
+    # TODO: Use downsized if large and link (for time efficiency)
     # Works if right-skewed (which is typical):
     Q1 = np.percentile(distances, 25) # First quartile
     Q3 = np.percentile(distances, 75) # Third quartile
     IQR = Q3 - Q1
     outlier_threshold = Q3 + 1.5 * IQR
     outlier_ind = np.where(distances > outlier_threshold)[0]
-    outliers_pcd = proc.get_cloud_by_index(original, outlier_ind) 
-    non_outliers_pcd = proc.get_cloud_by_index(original, outlier_ind, invert = True) 
+    outliers_pcd = proc.get_cloud_by_index(pcd, outlier_ind) 
+    non_outliers_pcd = proc.get_cloud_by_index(pcd, outlier_ind, invert = True)
+    if visualization: 
+        print("Visualize outliers (vs non-outliers):")
+        inout.visualize_differences(non_outliers_pcd, outliers_pcd)
+        print("Proportion outliers equal to" + str(len(outliers_pcd.points)) + " out of " +  str(len(original.points)) + "points in original pcd.")
+
+    print("Action in progress: scaling point clouds to same size...")
+    # Rescale pcd to mesh size. Use denoised cloud for this for better results.
+    pcd_max_bound = non_outliers_pcd.get_max_bound()
+    pcd_min_bound = non_outliers_pcd.get_min_bound()
+    pcd_dims = pcd_max_bound - pcd_min_bound
+    ref_max_bound = ref.get_max_bound()
+    ref_min_bound = ref.get_min_bound()
+    ref_dims = ref_max_bound - ref_min_bound
+    # Scale only point cloud:
+    scaling_factor = max(ref_dims) / max(pcd_dims)
+    # Scale point cloud and denoised point cloud:
+    pcd.scale(scaling_factor, center=pcd.get_center())
+    non_outliers_pcd.scale(scaling_factor, center=non_outliers_pcd.get_center())
+    pcd_before_transform.scale(scaling_factor, center=pcd_before_transform.get_center())
+    if visualization:
+        inout.visualize_differences(pcd, ref)
+
+    # Refine alignment after initial outlier removal:
+    print("Action in progress: second registration refinement using ICP local alignment (P2P)...")
+    alignment_pcd = non_outliers_pcd
+    alignment_ref = ref
+    new_icp_trans = ali.icp_P2P_registration(alignment_pcd, alignment_ref, icp_trans, distance_threshold=threshold)
+    eva = ali.evaluate(alignment_pcd, alignment_ref, threshold, new_icp_trans)
+    fitness = eva.fitness
+    print("Point cloud registration fitness (second run): ", fitness)
+    pcd_before_transform.transform(new_icp_trans) # Transform actual (original) point cloud (again)
+    pcd = pcd_before_transform
+    if visualization:
+        inout.visualize_differences(pcd, ref)
+
+    # (***)
+
+    print("Action in progress: final distortion detection based on euclidean distance (P2Point)...")
+    # TODO: Use downsized if large and link (for time efficiency)
+    # Calculate distances between downsized digitized scan and reference
+    distances = pcd.compute_point_cloud_distance(ref)
+    distances = np.asarray(distances)
+    # Update scores (the lowest the distance, the better --> lower score):
+    update_scores(distances, inverse = False)
+
+    print("Action in progress: final validity estimated from reference distances and previous scores (P2Point)...")
+    # TODO: Use downsized if large and link (for time efficiency)
+    # Works if right-skewed (which is typical):
+    Q1 = np.percentile(distances, 25) # First quartile
+    Q3 = np.percentile(distances, 75) # Third quartile
+    IQR = Q3 - Q1
+    outlier_threshold = Q3 + 1.5 * IQR
+    outlier_ind = np.where(distances > outlier_threshold)[0]
+    outliers_pcd = proc.get_cloud_by_index(pcd, outlier_ind) 
+    non_outliers_pcd = proc.get_cloud_by_index(pcd, outlier_ind, invert = True) 
     NUM_OUTLIERS = len(outliers_pcd.points)
     VALIDITY = 1.0 - (NUM_OUTLIERS/len(original.points))
     if snapshotting:
         inout.snapshot(outliers_pcd, name="outliers")
     if visualization:
-        inout.visualize(outliers_pcd)
-    #print("Visualize outliers (vs non-outliers):")
-    #inout.visualize_differences(non_outliers_pcd, outliers_pcd)
-    #print("Proportion outliers equal to" + str(len(outliers_pcd.points)) + " out of " +  str(len(original.points)) + "points in original pcd.")
+        print("Visualize outliers (vs non-outliers):")
+        inout.visualize_differences(non_outliers_pcd, outliers_pcd)
+        print("Proportion outliers equal to" + str(len(outliers_pcd.points)) + " out of " +  str(len(original.points)) + "points in original pcd.")
 
     print("Action in progress: completeness estimated from reference distances (P2Point)...")
-    # TODO: Use downsized if large and link
+    # TODO: Use downsized if large and link (for time efficiency)
     # Calculate distances between downsized digitized scan and reference
     distances = ref.compute_point_cloud_distance(pcd)
     distances = np.asarray(distances)
@@ -295,14 +337,12 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     if snapshotting:
         inout.snapshot(missing_values_ref_pcd, name="missing_values")
     if visualization:
-        inout.visualize(missing_values_ref_pcd)
-    #print("Visualize missing values in REF (vs non-missed values in REF):")
-    #inout.visualize_differences(non_missing_values_ref_pcd, missing_values_ref_pcd)
-    #print("Proportion missed values equal to" + str(len(missing_values_ref_pcd.points)) + " out of " +  str(len(original.points)) + "points in original pcd.")
-    
+        print("Visualize missing values in REF (vs non-missed values in REF):")
+        inout.visualize_differences(non_missing_values_ref_pcd, missing_values_ref_pcd)
+        print("Proportion missed values equal to" + str(len(missing_values_ref_pcd.points)) + " out of " +  str(len(ref.points)) + "points in original pcd.")
 
     print("Action in progress: distortion detection based on point-to-plane euclidean distances (P2Plane)...")
-    # TODO: Use downsized if large and link
+    # TODO: Use downsized if large and link (for time efficiency)
     scene = o3d.t.geometry.RaycastingScene()
     mesh_ids = {}
     ref_mesh = copy.deepcopy(original_ref)
@@ -329,13 +369,14 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     noise_ind = np.where(scaled_probs >= noise_threshold)[0]
     # Finding indices in noise_ind that are not in outlier_ind
     noise_ind = np.setdiff1d(noise_ind, outlier_ind)
-    noise = proc.get_cloud_by_index(original, noise_ind)
-    non_noise = proc.get_cloud_by_index(original, noise_ind, invert=True)
+    noise = proc.get_cloud_by_index(pcd, noise_ind)
+    non_noise = proc.get_cloud_by_index(pcd, noise_ind, invert=True)
     NUM_NOISE = len(noise.points)
     ACCURACY = 1.0 - (NUM_NOISE/len(original.points))
-    #print("Visualize noise (vs non-noise):")
-    #inout.visualize_differences(non_noise, noise)
-    #print("Proportion noise equal to" + str(len(noise.points)) + " out of " +  str(len(original.points)) + "points in original pcd.")
+    if visualization:
+        print("Visualize noise (vs non-noise):")
+        inout.visualize_differences(non_noise, noise)
+        print("Proportion noise equal to" + str(len(noise.points)) + " out of " +  str(len(original.points)) + "points in original pcd.")
 
     # End processing time
     end_time = time.time()
@@ -343,13 +384,15 @@ def process_with_reference(input_file:str, reference_file:str, *args):
     print("Processing time (RPCQA):" +  str(rpcqa_time))
 
     if saving:
-        # If save --> obtain clean:
+        # Obtain filtered cloud by removing noise and outliers:
         noise_out_ind = list(noise_ind) + list(outlier_ind)
         noise_out_ind = set(noise_out_ind)
         noise_out_ind = np.array(list(noise_out_ind))
         clean = proc.get_cloud_by_index(original, noise_out_ind, invert=True)
         inout.write_cloud("filtered_pcd.pcd", clean) # Write on current path
-        #inout.visualize(clean)
+        if visualization:
+            inout.visualize(clean)
+
     return [ACCURACY, VALIDITY, COMPLETENESS]
 
 
@@ -479,52 +522,7 @@ def nrpcqa_modelling(pcd, snapshotting = False, visualization = False):
         if snapshotting:
             inout.snapshot(v_mesh, name = "modelling")
         if visualization:
-            inout.visualize(v_mesh)
-
-def reattribute_values_and_score(values, inverse = True):
-    '''
-        Uses links to reattribute values to the points belonging to voxel if downsized model is used, and computes scores.
-    Args:
-        values (int list) : list of values beloging to voxels / all points
-    Returns:
-        actual_values (int list) : list of values beloging to all points
-    '''
-    global large
-    global original
-    global downsized_links
-
-    if large:
-        # Reattribute values to full point cloud:
-        actual_values = np.empty(len(original.points)).astype(np.int32)
-        for k,v in downsized_links.items():
-            actual_values[v] = values[k]
-        actual_values = list(actual_values)
-    else:
-        actual_values = list(values)
-    # Update scores:
-    update_scores(actual_values, inverse = inverse)
-    return actual_values
-
-
-def update_scores(values, inverse = True, downsized = False):
-    '''
-        Updates scores.
-    Args:
-        values (int list) : list of values beloging to all points
-    '''
-    global point_scores
-    global downsized_links
-
-    # Update scores:
-    mapped_probs = proc.map_to_probabilities(values, inverse = inverse)
-    if downsized:
-        for k,v in downsized_links.items():
-            for ind in v:
-                point_scores[ind] += mapped_probs[k]
-    else:
-        for i in range(len(point_scores)):
-            point_scores[i] += mapped_probs[i]
-
+            inout.visualize(v_mesh) 
 
 
 def nrpcqa_radius_nb(pcd, snapshotting = False, visualization = False, K = 5, P = 10, shades = 10):
@@ -632,6 +630,51 @@ def nrpcqa_statistical(pcd, snapshotting = False, visualization = False, std_rat
         inout.snapshot(noise_pcd, name = "stat_noise")
     if visualization:
         inout.visualize_differences(clean_pcd, noise_pcd)
+
+
+def reattribute_values_and_score(values, inverse = True):
+    '''
+        Uses links to reattribute values to the points belonging to voxel if downsized model is used, and computes scores.
+    Args:
+        values (int list) : list of values beloging to voxels / all points
+    Returns:
+        actual_values (int list) : list of values beloging to all points
+    '''
+    global large
+    global original
+    global downsized_links
+
+    if large:
+        # Reattribute values to full point cloud:
+        actual_values = np.empty(len(original.points)).astype(np.int32)
+        for k,v in downsized_links.items():
+            actual_values[v] = values[k]
+        actual_values = list(actual_values)
+    else:
+        actual_values = list(values)
+    # Update scores:
+    update_scores(actual_values, inverse = inverse)
+    return actual_values
+
+
+def update_scores(values, inverse = True, downsized = False):
+    '''
+        Updates scores.
+    Args:
+        values (int list) : list of values beloging to all points
+    '''
+    global point_scores
+    global downsized_links
+
+    # Update scores:
+    mapped_probs = proc.map_to_probabilities(values, inverse = inverse)
+    if downsized:
+        for k,v in downsized_links.items():
+            for ind in v:
+                point_scores[ind] += mapped_probs[k]
+    else:
+        for i in range(len(point_scores)):
+            point_scores[i] += mapped_probs[i]
   
 
 
@@ -723,10 +766,10 @@ def process_without_reference(input_file: str):
     point_scores = np.zeros(NUM_RAW_POINTS)
 
     print("Action in progress: downsize and voxelization assessment...")
-    nrpcqa_voxelization(original, snapshotting = snapshotting, visualization = visualization) # OK
+    nrpcqa_voxelization(original, snapshotting = snapshotting, visualization = visualization) 
 
     print("Action in progress: density assessment based on voxel modelling...")
-    nrpcqa_modelling(original, snapshotting = snapshotting, visualization = visualization) # OK
+    nrpcqa_modelling(original, snapshotting = snapshotting, visualization = visualization) 
 
     # To make processing more time-efficient, use downsized point cloud for large clouds:
     if large:
@@ -735,13 +778,13 @@ def process_without_reference(input_file: str):
         pcd = copy.deepcopy(original)
    
     print("Action in progress: density assessment followed based on radius neighbourhood,...") 
-    nrpcqa_radius_nb(pcd, snapshotting = snapshotting, visualization = visualization) # OK
+    nrpcqa_radius_nb(pcd, snapshotting = snapshotting, visualization = visualization) 
 
     print("Action in progress: density-based assessment based on Local Outlier Factor...") 
-    nrpcqa_lof(pcd, snapshotting = snapshotting, visualization = visualization) # OK
+    nrpcqa_lof(pcd, snapshotting = snapshotting, visualization = visualization) 
 
     print("Action in progress: statistical removal of noise based on distance to neighbours...") 
-    nrpcqa_statistical(pcd, snapshotting = snapshotting, visualization = visualization) # OK
+    nrpcqa_statistical(pcd, snapshotting = snapshotting, visualization = visualization) 
 
 
     # Get accuracy:

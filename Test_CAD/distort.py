@@ -248,7 +248,7 @@ def apply_local_missing(ref, printing = False):
             visualize(distorted_ref)
     return local_missing_pcds
 
-def apply_uniform_shift(ref):
+def ignore_apply_uniform_shift(ref):
     '''
         Creating distorted clouds by shifting. Shifting is applied to 10-20-30-40-50% of randomly selected points, with shifting ranges of -/+ 0.5-1-2-3-4% respectively of bounding box.  Threat to accuracy. 
     Args:
@@ -284,7 +284,7 @@ def apply_uniform_shift(ref):
         visualize(neg_distorted_ref)
     return uniform_shift_pcds
 
-def apply_reconstruction(ref, sampling_rate):
+def ignore_apply_reconstruction(ref, sampling_rate):
     '''
         Creating distorted clouds by adding outliers by reconstruction of downsampled point clouds. Varies over 3 depth levels. Threat to accuracy. 
     Args:
@@ -309,7 +309,7 @@ def apply_reconstruction(ref, sampling_rate):
             visualize(ref_reconstructed)
     return reconstructed_pcds
 
-def apply_downsampling(ref):
+def ignore_apply_downsampling(ref):
     '''
         Creating distorted clouds by randomly downsampling by removing 10%-30%-50%-70%-90% points from point cloud. This induces missing values.  Threat to completeness. 
     Args:
@@ -350,21 +350,18 @@ def distort(cad_path, output):
     ref_pcd = create_uniform_sampled_cloud_from_mesh(cad, nr_points = sampling_rate, poisson = True, factor = 1)
     # Reference to be add distortions on:
     ref = copy.deepcopy(ref_pcd)
-    # Normalize ref: 
-    target_scale = 10  # Set your desired target scale
-    ref = normalize_point_cloud(ref, target_scale)
+    # For experiments - allow normalization of reference: 
+    # target_scale = 10  # Set your desired target scale
+    # ref = normalize_point_cloud(ref, target_scale)
+    # ref_pcd = normalize_point_cloud(ref_pcd, target_scale)
     print("Action in progress: applying distortions...")
     # ______________GEOMETRY DISTORTIONS______________
-    # Gaussian geometry shifting: apply shift to each point randomly. All points superimposed with a zero-mean Gaussian geometry shift whose standard deviation is 0.001, 0.0025, 0.0055, 0.0075, 0.01 proportion of the bounding box. - Threat to accuracy
+    # Gaussian geometry shifting - Threat to accuracy
     gaussian_pcds = apply_gaussian(ref, printing = False) 
-    # Printing for crown:
-    printing = False
-    if "c" in output:
-        printing = True
-    # Outlier scattering: scatter the cloud with outliers at five different levels. - Threat to validity.
-    outlier_pcds = apply_outlier_scattering(ref, printing = printing)
-    # Local missing: we define a space anchor of 0.3% size of bounding box. Points in selected anchors are removed. - Threat to completeness.
-    local_missing_pcds = apply_local_missing(ref, printing  = printing)
+    # Outlier scattering - Threat to validity.
+    outlier_pcds = apply_outlier_scattering(ref, printing = False)
+    # Local missing - Threat to completeness.
+    local_missing_pcds = apply_local_missing(ref, printing  = False)
     distortion_data = {}
     distortion_data["Raw"] = [ref_pcd]
     distortion_data["Accuracy"] = gaussian_pcds
@@ -382,43 +379,17 @@ def distort(cad_path, output):
             o3d.io.write_point_cloud(point_cloud_path, point_cloud)
     print(f"Distortion process finished.")
 
-
 def main(argv = None):
-    ''' Parsing command line arguments
+    ''' Make sure that the python file is in the same folder as the .stl models.
     Args:
         argv (list): list of arguments
     '''
-    '''
     stl_files = glob.glob("*.stl")
-    # Print the list of .stl filenames
-    print("STL filenames in the current directory:")
+    # Distort .stl models in the current folder:
     for stl_filename in stl_files:
         cad_path = stl_filename
-        output_name = stl_filename[:-4]
-        print(cad_path)
-        print(output_name)
+        output_name = stl_filename[:-4] # Remove .stl ending
         distort(cad_path, output_name)
-    '''
-    # Top-level parser:
-    parser = argparse.ArgumentParser(add_help=True)
-    # No arguments:
-    if argv is None:
-        argv = sys.argv[1:]
-        if not len(argv):
-            parser.error('Insufficient arguments provided.')
-    parser.add_argument("cad_path", help = "The reference file path (expected format: .stl)")
-    parser.add_argument("-o", "--output",  help = "Filename of output folder containing distorted point clouds. No file extension needed.")
-    args = parser.parse_args(argv)
-    try:
-        cad_path = args.cad_path
-        if args.output:
-            output_name = args.output
-        else:
-            output_name = "3D_DaVa_Simulations"
-        distort(cad_path, output_name)
-    except Exception as e:
-        print(str(e) + " Action dropped: distorting dataset.  Use -h, --h or --help for more information.")
-    
 
 if __name__ == '__main__':
     main()
